@@ -2,6 +2,8 @@
 
 Takes attachments out of an IMAP mailbox and puts them into [Papra](https://papra.app).
 
+Papra can already ingest documents by email, but both documented options route your mail through a third party: the hosted OwlRelay service, or a Cloudflare Email Worker. This script talks to your mailbox directly instead, in an effort to keep this transit entirely self-hosted.
+
 I have a sieve filter on my mail server that copies any mail with an attachment
 worth keeping into a separate mailbox. This script empties that mailbox: it finds
 the unread mail, uploads the attachments to Papra, checks they arrived, and then
