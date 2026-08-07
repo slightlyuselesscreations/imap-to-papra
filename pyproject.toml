@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "imap-to-papra"
-version = "0.1.0"
+dynamic = ["version"]
 readme = "README.md"
 description = "Archive IMAP mail attachments into a self-hosted Papra instance."
 requires-python = ">=3.11"
@@ -18,6 +18,9 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 imap-to-papra = "imap_to_papra.cli:main"
+
+[tool.hatch.version]
+path = "imap_to_papra/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["imap_to_papra"]
