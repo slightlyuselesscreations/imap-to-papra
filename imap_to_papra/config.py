@@ -160,6 +160,12 @@ def _build_imap(raw: dict[str, Any]) -> ImapConfig:
     starttls = _bool(table, "starttls", section, False)
     if use_ssl and starttls:
         raise ConfigError("imap.ssl and imap.starttls are mutually exclusive: implicit TLS already encrypts the connection")
+    if not use_ssl and not starttls:
+        raise ConfigError(
+            "imap.ssl and imap.starttls are both false, which would send your password "
+            "over an unencrypted connection. Use ssl = true (port 993), "
+            "or starttls = true (port 143)."
+        )
 
     on_success = _str(table, "on_success", section, "delete").lower()
     if on_success not in ON_SUCCESS_CHOICES:

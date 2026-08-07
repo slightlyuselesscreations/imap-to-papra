@@ -86,6 +86,11 @@ class PapraClient:
         )
         self._session.verify = cfg.verify_ssl
 
+        if not cfg.verify_ssl:
+            log.warning("Papra certificate verification is disabled (papra.verify_ssl = false)")
+        if cfg.base_url.startswith("http://"):
+            log.warning("papra.base_url uses http://, so the API key is sent unencrypted")
+
     def close(self) -> None:
         self._session.close()
 

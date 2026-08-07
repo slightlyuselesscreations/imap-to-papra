@@ -8,6 +8,7 @@ process dies, including on SIGKILL, so a crashed run cannot wedge the schedule.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import tempfile
@@ -54,6 +55,18 @@ def _try_lock(handle: IO[str]) -> bool:
         return False
 
 
+def _open_lock_file(path: Path) -> IO[str]:
+    """Open the lock file for read/write, refusing to follow a symlink.
+
+    The default path lives in a world-writable temp directory, so without
+    O_NOFOLLOW anyone able to plant a symlink there could redirect the truncate
+    and PID write below onto a file of their choosing.
+    """
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    return os.fdopen(fd, "r+", encoding="utf-8")
+
+
 @contextmanager
 def single_instance(path: Path | None = None) -> Iterator[Path]:
     """Hold an exclusive lock for the duration of the block.
@@ -64,10 +77,13 @@ def single_instance(path: Path | None = None) -> Iterator[Path]:
 
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(lock_path, "a+", encoding="utf-8")
+        handle = _open_lock_file(lock_path)
     except OSError as exc:
-        # A lock we cannot create should not stop the actual work.
-        log.warning("cannot create lock file %s (%s); continuing without an overlap guard", lock_path, exc)
+        # A lock we cannot open should not stop the actual work.
+        if exc.errno == errno.ELOOP:
+            log.warning("lock file %s is a symlink and was not followed; continuing without an overlap guard", lock_path)
+        else:
+            log.warning("cannot create lock file %s (%s); continuing without an overlap guard", lock_path, exc)
         yield lock_path
         return
 

@@ -13,6 +13,7 @@ password = ""
 mailbox = "INBOX"
 
 # Implicit TLS on 993. For explicit TLS on 143 set ssl = false, starttls = true.
+# Both false is refused; the password would go over the wire in the clear.
 ssl = true
 starttls = false
 verify_ssl = true

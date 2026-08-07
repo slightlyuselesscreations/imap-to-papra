@@ -19,12 +19,12 @@ My sieve filter looks like this:
 require ["copy", "mime"];
 
 if anyof (
-    header :mime :anychild :param "filename" :contains "Content-Disposition" "",
-    header :mime :anychild :param "name" :contains "Content-Type" "",
+    header :mime :anychild :param "filename" :matches "Content-Disposition" "?*",
+    header :mime :anychild :param "name" :matches "Content-Type" "?*",
     header :mime :anychild :contains "Content-Disposition" "attachment"
 )
 {
-    redirect :copy "secondary@mailbox.tld";
+    redirect :copy "papra@wise.wtf";
 }
 ```
 
