@@ -1,0 +1,14 @@
+# systemctl enable --now imap-to-papra.timer
+
+[Unit]
+Description=Run imap-to-papra periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+RandomizedDelaySec=30
+Unit=imap-to-papra.service
+
+[Install]
+WantedBy=timers.target

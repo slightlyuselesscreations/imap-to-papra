@@ -1,0 +1,47 @@
+# Runs once and exits. Pair it with imap-to-papra.timer.
+#
+# Setup:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin imap-to-papra
+#   install -d -o root -g imap-to-papra -m 0750 /etc/imap-to-papra
+#   install -o root -g imap-to-papra -m 0640 config.toml /etc/imap-to-papra/config.toml
+
+[Unit]
+Description=Archive IMAP mail attachments into Papra
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=imap-to-papra
+Group=imap-to-papra
+
+ExecStart=/usr/local/bin/imap-to-papra --config /etc/imap-to-papra/config.toml
+
+RuntimeDirectory=imap-to-papra
+RuntimeDirectoryMode=0700
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+# Exit 1 means some attachments failed and will be retried next run.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

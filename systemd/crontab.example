@@ -1,0 +1,8 @@
+# crontab -u imap-to-papra -e
+
+MAILTO=""
+
+*/5 * * * * /usr/local/bin/imap-to-papra --config /etc/imap-to-papra/config.toml
+
+# Only mail on failure (needs moreutils):
+# */5 * * * * chronic /usr/local/bin/imap-to-papra --config /etc/imap-to-papra/config.toml

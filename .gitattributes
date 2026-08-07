@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+crontab*        text eol=lf
+*.py            text eol=lf
+*.toml          text eol=lf
+*.yml           text eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary

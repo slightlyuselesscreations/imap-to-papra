@@ -1,0 +1,17 @@
+services:
+  imap-to-papra:
+    image: ghcr.io/wisewtf/imap-to-papra:latest
+    container_name: imap-to-papra
+    restart: unless-stopped
+
+    environment:
+      CRON_SCHEDULE: "*/5 * * * *"
+
+    volumes:
+      - ./config.toml:/config/config.toml:ro
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
