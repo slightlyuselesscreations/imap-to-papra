@@ -8,7 +8,9 @@ absent, duplicated, or containing path separators.
 from __future__ import annotations
 
 import hashlib
+import logging
 import mimetypes
+import os
 import re
 from dataclasses import dataclass
 from email.message import Message
@@ -16,12 +18,18 @@ from typing import Iterator
 
 from imap_to_papra.config import AttachmentsConfig
 
+log = logging.getLogger(__name__)
+
 # Characters that must never reach a filename: control chars plus the union of
 # path separators and shell/Windows-reserved punctuation.
 _UNSAFE_CHARS = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]')
 _CID_REFERENCE = re.compile(r"""cid:([^"'\s>)]+)""", re.IGNORECASE)
 
 MAX_FILENAME_LENGTH = 200
+
+# Not a lookup table: these are the two spellings senders use to say "I have no
+# idea what this is". Anything else is a real claim and is left alone.
+_UNINFORMATIVE_TYPES = frozenset({"application/octet-stream", "binary/octet-stream"})
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,62 @@ def _payload_bytes(part: Message) -> bytes:
 def extension_of(filename: str) -> str:
     _, _, suffix = filename.rpartition(".")
     return suffix.lower() if suffix and suffix != filename else ""
+
+
+def log_type_sources() -> None:
+    """Report where the MIME type table came from, once per run.
+
+    Coverage depends entirely on this. Python's built-in table has no OOXML
+    entries, so without a system table a .xlsx resolves to nothing and lands in
+    Papra as a binary. Saying so up front turns that into a visible cause rather
+    than a silent one.
+    """
+    found = [path for path in mimetypes.knownfiles if os.path.isfile(path)]
+    if found:
+        log.debug("MIME type tables loaded from: %s", ", ".join(found))
+        return
+
+    if os.name == "nt":
+        log.debug("no MIME type files found; using the Windows registry and Python's built-in table")
+        return
+
+    log.warning(
+        "no system MIME type table found (looked for: %s). Attachments whose sender labels them "
+        "%s may be filed in Papra as binaries. On Debian-based systems, install the media-types package.",
+        ", ".join(mimetypes.knownfiles),
+        "application/octet-stream",
+    )
+
+
+def resolve_content_type(declared: str, filename: str) -> tuple[str, str]:
+    """Choose the MIME type to send to Papra, and explain the choice.
+
+    Papra keys both the displayed file type and its text extraction off whatever
+    we send, so forwarding a sender's `application/octet-stream` files a perfectly
+    good PDF as an opaque, unsearchable binary. Senders label attachments that way
+    constantly, so an uninformative claim is replaced by whatever the filename
+    extension resolves to. A specific claim is always left alone.
+
+    The extension lookup is the standard library's, backed by the system MIME
+    table, so nothing is mapped by hand here.
+
+    Returns (content_type, reason) where reason is for logging.
+    """
+    declared = (declared or "").strip().lower()
+
+    if declared and declared not in _UNINFORMATIVE_TYPES:
+        return declared, "declared by sender"
+
+    guessed, _encoding = mimetypes.guess_type(filename)
+    if guessed and guessed.lower() not in _UNINFORMATIVE_TYPES:
+        return guessed, "resolved from the filename extension"
+
+    fallback = declared or "application/octet-stream"
+    extension = extension_of(filename)
+    return fallback, (
+        f"left as {fallback}: sender gave no usable type and "
+        + (f"extension {extension!r} is unknown here" if extension else "the filename has no extension")
+    )
 
 
 def sanitise_filename(raw: str, *, fallback_stem: str, index: int, content_type: str) -> str:
@@ -208,8 +272,8 @@ def select(message: Message, cfg: AttachmentsConfig, *, fallback_stem: str = "at
                 skipped.append(Skipped(raw_name or "<unnamed>", reason))
             continue
 
-        content_type = part.get_content_type()
-        name = sanitise_filename(raw_name, fallback_stem=fallback_stem, index=index, content_type=content_type)
+        declared_type = part.get_content_type()
+        name = sanitise_filename(raw_name, fallback_stem=fallback_stem, index=index, content_type=declared_type)
         extension = extension_of(name)
 
         if extension in cfg.denied:
@@ -238,6 +302,20 @@ def select(message: Message, cfg: AttachmentsConfig, *, fallback_stem: str = "at
                 )
             )
             continue
+
+        content_type, reason = resolve_content_type(declared_type, name)
+        if content_type != declared_type.lower():
+            log.info(
+                "  %s: sender declared %s, sending %s (%s)",
+                name, declared_type, content_type, reason,
+            )
+        elif content_type in _UNINFORMATIVE_TYPES:
+            log.warning(
+                "  %s: %s — Papra will file this as a binary and will not index its text",
+                name, reason,
+            )
+        else:
+            log.debug("  %s: content type %s (%s)", name, content_type, reason)
 
         attachments.append(
             Attachment(

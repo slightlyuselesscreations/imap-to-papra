@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
 # supercronic runs the schedule inside the container and logs to stdout.
+# media-types provides /etc/mime.types. Without it Python cannot resolve .docx or
+# .xlsx and those attachments end up in Papra as unsearchable binaries.
 ARG SUPERCRONIC_VERSION=v0.2.48
 
 RUN set -eux; \
@@ -11,7 +13,7 @@ RUN set -eux; \
       *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends curl ca-certificates; \
+    apt-get install -y --no-install-recommends curl ca-certificates media-types; \
     rm -rf /var/lib/apt/lists/*; \
     curl -fsSLO "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${arch}"; \
     echo "${sha1}  supercronic-linux-${arch}" | sha1sum -c -; \

@@ -159,6 +159,7 @@ def _process_message(
 def run_once(cfg: Config, *, dry_run: bool = False) -> Summary:
     """Execute a single pass and return its summary."""
     summary = Summary()
+    attachments_mod.log_type_sources()
 
     with PapraClient(cfg.papra) as client:
         info = client.preflight()
