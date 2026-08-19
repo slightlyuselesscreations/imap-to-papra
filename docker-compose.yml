@@ -1,6 +1,6 @@
 services:
   imap-to-papra:
-    image: ghcr.io/wisewtf/imap-to-papra:latest
+    image: ghcr.io/slightlyuselesscreations/imap-to-papra:latest
     container_name: imap-to-papra
     restart: unless-stopped
 

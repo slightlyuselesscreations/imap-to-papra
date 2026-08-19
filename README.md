@@ -51,7 +51,7 @@ create a second copy of anything.
 ```yaml
 services:
   imap-to-papra:
-    image: ghcr.io/wisewtf/imap-to-papra:latest
+    image: ghcr.io/slightlyuselesscreations/imap-to-papra:latest
     restart: unless-stopped
     environment:
       CRON_SCHEDULE: "*/5 * * * *"
