@@ -4,32 +4,6 @@ Takes attachments out of an IMAP mailbox and puts them into [Papra](https://papr
 
 Papra can already ingest documents by email, but both documented options route your mail through a third party: the hosted OwlRelay service, or a Cloudflare Email Worker. This script talks to your mailbox directly instead, in an effort to keep this transit entirely self-hosted.
 
-I have a sieve filter on my mail server that copies any mail with an attachment
-worth keeping into a separate mailbox. This script empties that mailbox: it finds
-the unread mail, uploads the attachments to Papra, checks they arrived, and then
-deletes the mail. It knows nothing about sieve, it just drains whatever mailbox
-you point it at.
-
-It runs once and exits. Scheduling is left to cron, a systemd timer, or the cron
-daemon inside the Docker image.
-
-My sieve filter looks like this:
-
-```sieve
-require ["copy", "mime"];
-
-if anyof (
-    header :mime :anychild :param "filename" :matches "Content-Disposition" "?*",
-    header :mime :anychild :param "name" :matches "Content-Type" "?*",
-    header :mime :anychild :contains "Content-Disposition" "attachment"
-)
-{
-    redirect :copy "papra@wise.wtf";
-}
-```
-
-In case you are using `mailcow-dockerized` like me, this can go as an admin configured filter for the mailbox you want it to act upon. (IE: Your main mailbox)
-
 ## What it does
 
 * Connects to IMAP over TLS and looks for unread messages

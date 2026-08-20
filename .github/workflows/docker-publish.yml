@@ -4,7 +4,7 @@
 #   pull request  -> build only, no push
 #
 # The first push creates the package as private. Set it to Public at
-# github.com/users/slightlyuselesscreations/packages/container/imap-to-papra/settings
+# github.com/orgs/slightlyuselesscreations/packages/container/imap-to-papra/settings
 
 name: Build and publish image
 
