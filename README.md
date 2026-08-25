@@ -125,8 +125,11 @@ original date cannot be read, `Email date` falls back to when the mail was
 forwarded rather than guessing. An attached original always has a real date.
 
 Note that a forward-as-attachment holds two files as far as Papra is concerned:
-the attached `.eml` and the attachment inside it. Both are archived. To keep
-only the real document, add `eml` to `attachments.denied`.
+the attached `.eml` and the attachment inside it. Both are archived and both are
+labelled with the original sender, subject and date. The `.eml` gets no
+`Attachment filename`, since wrapper names like `Original.eml` are invented by
+the forwarding client and describe nothing. To skip the wrapper entirely, add
+`eml` to `attachments.denied`.
 
 ## Usage
 

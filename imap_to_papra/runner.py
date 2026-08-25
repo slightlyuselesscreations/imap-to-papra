@@ -152,15 +152,26 @@ class MailFacts:
 
 
 def _property_values(facts: MailFacts, attachment: Attachment) -> dict[str, object]:
-    """The custom property values for one document."""
+    """The custom property values for one document.
+
+    A forward-as-attachment archives the carried mail itself as well as what was
+    inside it. That wrapper has no attachment filename worth recording: names
+    like "Original.eml" are invented by the forwarding client and say nothing
+    about the document, so the property is left unset rather than filled with
+    noise.
+    """
     values: dict[str, object] = {
         "Email subject": facts.subject,
         "Email sender": facts.sender,
         "Email import": True,
         "Email date": facts.sent_at,
-        "Attachment filename": attachment.filename,
+        "Attachment filename": "" if _is_carried_mail(attachment) else attachment.filename,
     }
     return {name: value for name, value in values.items() if value != ""}
+
+
+def _is_carried_mail(attachment: Attachment) -> bool:
+    return attachment.content_type == "message/rfc822"
 
 
 def _resolve_properties(client: PapraClient) -> dict[str, str]:
