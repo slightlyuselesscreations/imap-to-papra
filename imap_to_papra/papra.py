@@ -7,7 +7,10 @@ The upload contract this relies on (docs.papra.app / papra-hq/papra):
       409 -> code "document.already_exists" (Papra deduplicates on SHA-256)
       413 -> code "document.size_too_large"
 
-    PATCH {base}/api/organizations/{orgId}/documents/{docId}   json {"notes": ...}
+    GET  {base}/api/organizations/{orgId}/custom-properties  -> {"propertyDefinitions": [...]}
+    POST {base}/api/organizations/{orgId}/custom-properties     json {"name", "type"}
+    PUT  {base}/api/organizations/{orgId}/documents/{docId}/custom-properties/{defId}
+                                                               json {"value": ...} -> 204
 
 The 409 is what makes this whole tool safe to re-run. If we upload a document
 and then crash before deleting the mail, the next pass re-uploads, gets a 409,
@@ -30,6 +33,9 @@ from imap_to_papra.config import PapraConfig
 log = logging.getLogger(__name__)
 
 REQUIRED_PERMISSIONS = ("documents:create", "documents:read")
+# Only needed for the custom properties, which are best-effort, so a key
+# without them still archives mail. Preflight warns rather than aborting.
+PROPERTY_PERMISSIONS = ("custom-properties:read", "custom-properties:create", "documents:update")
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
@@ -110,6 +116,9 @@ class PapraClient:
     def _org_url(self, suffix: str = "") -> str:
         return self._url(f"/api/organizations/{self._cfg.organization_id}/documents{suffix}")
 
+    def _properties_url(self, suffix: str = "") -> str:
+        return self._url(f"/api/organizations/{self._cfg.organization_id}/custom-properties{suffix}")
+
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         """Issue a request, retrying transient failures with exponential backoff.
 
@@ -189,6 +198,15 @@ class PapraClient:
                     f"Grant them in the Papra dashboard; the key currently has: {', '.join(permissions) or 'none'}."
                 )
 
+            lacking = [name for name in PROPERTY_PERMISSIONS if name not in permissions]
+            if lacking:
+                log.warning(
+                    "Papra API key is missing %s, so documents will be archived but not "
+                    "labelled with the email subject, sender and date. Grant them in the "
+                    "Papra dashboard to enable it.",
+                    ", ".join(lacking),
+                )
+
         return info
 
     # ----------------------------------------------------------------- upload
@@ -249,16 +267,86 @@ class PapraClient:
             return body["id"]
         return ""
 
+    # ------------------------------------------------------- custom properties
+
+    def property_definitions(self, wanted: dict[str, str]) -> dict[str, str]:
+        """Map each wanted property name to its definition id, creating misses.
+
+        Papra does not enforce unique property names, so creating blindly would
+        add a second "Email subject" on every run. The organization's existing
+        definitions are listed first and matched case-insensitively.
+
+        Definition ids are stable, so this runs once per pass, not per document.
+        """
+        response = self._request("GET", self._properties_url())
+        if response.status_code in (401, 403):
+            raise PapraAuthError(
+                f"Papra rejected the API key while listing custom properties "
+                f"(HTTP {response.status_code}) - the key needs custom-properties:read."
+            )
+        if not response.ok:
+            raise PapraError(f"could not list custom properties: HTTP {response.status_code}")
+
+        existing = {
+            definition["name"].casefold(): definition["id"]
+            for definition in _definition_list(response)
+            if isinstance(definition.get("name"), str) and isinstance(definition.get("id"), str)
+        }
+
+        resolved: dict[str, str] = {}
+        for name, property_type in wanted.items():
+            found = existing.get(name.casefold())
+            resolved[name] = found if found else self._create_definition(name, property_type)
+        return resolved
+
+    def _create_definition(self, name: str, property_type: str) -> str:
+        response = self._request(
+            "POST", self._properties_url(), json={"name": name, "type": property_type}
+        )
+        if response.status_code in (401, 403):
+            raise PapraAuthError(
+                f"Papra rejected the API key while creating the {name!r} custom property "
+                f"(HTTP {response.status_code}) - the key needs custom-properties:create."
+            )
+        if not response.ok:
+            raise PapraError(
+                f"could not create the {name!r} custom property "
+                f"(HTTP {response.status_code} {_error_code(response) or response.text[:200]})"
+            )
+
+        definition_id = _definition_id(response)
+        if not definition_id:
+            raise PapraError(f"Papra created the {name!r} custom property but returned no id")
+
+        log.info("created custom property %r (%s) in Papra", name, property_type)
+        return definition_id
+
+    def set_property(self, document_id: str, definition_id: str, value: object) -> None:
+        """Set one custom property value on a document. Papra answers 204."""
+        response = self._request(
+            "PUT",
+            self._org_url(f"/{document_id}/custom-properties/{definition_id}"),
+            json={"value": value},
+        )
+        if response.status_code in (401, 403):
+            raise PapraAuthError(
+                f"Papra rejected the API key while setting a custom property "
+                f"(HTTP {response.status_code}) - the key needs documents:update."
+            )
+        if not response.ok:
+            raise PapraError(
+                f"could not set custom property {definition_id} on document {document_id} "
+                f"(HTTP {response.status_code} {_error_code(response) or response.text[:200]})"
+            )
+
     # ----------------------------------------------------------- verification
 
-    def verify(self, document_id: str, attachment: Attachment) -> dict[str, Any]:
+    def verify(self, document_id: str, attachment: Attachment) -> None:
         """Read the document back and confirm it is really stored.
 
         When Papra exposes the stored SHA-256 we compare it against the bytes we
         sent, which is a genuine content-level guarantee rather than just
         "the id resolves".
-
-        Returns the stored document so callers can use it without a second GET.
         """
         response = self._request("GET", self._org_url(f"/{document_id}"))
 
@@ -295,31 +383,34 @@ class PapraClient:
             document_id,
             " (sha256 matched)" if stored_hash else "",
         )
-        return document
 
-    # ------------------------------------------------------------------ notes
 
-    def add_note(self, document_id: str, note: str, *, existing: str = "") -> None:
-        """Append `note` to a document's notes field.
+def _definition_list(response: requests.Response) -> list[dict[str, Any]]:
+    """The definitions out of a list response, whatever envelope Papra uses."""
+    try:
+        body = response.json()
+    except ValueError:
+        return []
+    if isinstance(body, list):
+        candidates = body
+    elif isinstance(body, dict):
+        candidates = body.get("propertyDefinitions") or body.get("customProperties") or []
+    else:
+        return []
+    return [item for item in candidates if isinstance(item, dict)]
 
-        Papra's PATCH replaces the field outright, so the existing text is read
-        from the document verify() already fetched and prepended here. Notes are
-        not part of the full-text index (documents_fts covers name and content
-        only), so this is context to read on the document, not something that
-        will ever turn up in a search.
-        """
-        existing = existing.strip()
-        if note in existing:
-            return
 
-        body = f"{existing}\n\n{note}" if existing else note
-        response = self._request("PATCH", self._org_url(f"/{document_id}"), json={"notes": body})
-
-        if not response.ok:
-            raise PapraError(
-                f"could not annotate document {document_id} "
-                f"(HTTP {response.status_code} {_error_code(response) or response.text[:200]})"
-            )
+def _definition_id(response: requests.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    for candidate in (body.get("propertyDefinition"), body.get("customProperty"), body):
+        if isinstance(candidate, dict) and isinstance(candidate.get("id"), str):
+            return candidate["id"]
+    return ""
 
 
 def _stored_sha256(document: dict[str, Any]) -> str:

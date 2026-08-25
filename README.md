@@ -10,8 +10,8 @@ Papra can already ingest documents by email, but both documented options route y
 * Picks out the real attachments, skipping inline images (signature logos and the
   like) and noise such as smime.p7s
 * Uploads each one to Papra and verifies it by reading it back
-* Records who sent it, the subject and the date in the document's notes, so a
-  file called `doc_00123.pdf` still says what it is
+* Labels the document with the mail it came from, using Papra custom
+  properties, so a file called `doc_00123.pdf` is still findable
 * Deletes the message, but only if every attachment made it
 * Optionally sends an ntfy notification saying what was filed, from whom, and
   with what subject
@@ -63,7 +63,44 @@ api_key = "..."
 organization_id = "org_..."
 ```
 
-The API key needs the `documents:create` and `documents:read` permissions.
+### API key permissions
+
+Create the key in Papra under **Settings -> API keys** and tick:
+
+| Permission | Papra label | Needed for |
+| --- | --- | --- |
+| `documents:create` | Create documents | Uploading the attachment |
+| `documents:read` | Read documents | Reading it back to verify it stored |
+| `documents:update` | Update documents | Setting the custom properties on it |
+| `custom-properties:read` | Read custom properties | Finding the properties that already exist |
+| `custom-properties:create` | Create custom properties | Creating the ones that do not |
+
+The first two are mandatory and the run aborts without them. The last three are
+only needed for labelling: without them documents are still archived, and the
+run logs a warning once at startup saying what is missing.
+
+No delete permission is required. This tool never removes anything from Papra.
+
+## Custom properties
+
+On each run the tool looks for these custom properties in the organization and
+creates any that are missing, then fills them in on every document it uploads:
+
+| Property | Type | Value |
+| --- | --- | --- |
+| `Email subject` | text | The mail's subject |
+| `Email sender` | text | The sender's address, without the display name |
+| `Email import` | boolean | Always true, so mail-sourced documents can be told apart from hand-uploaded ones |
+| `Email date` | date | When the mail was sent, from its Date header |
+| `Attachment filename` | text | The attachment's name on arrival, which survives a later rename in Papra |
+
+Matching is by name, case-insensitively, so renaming a property in Papra makes
+the next run create a fresh one. Papra allows duplicate property names, so
+rename with that in mind.
+
+These are searchable: `"email sender":billing@acme.com`, `has:"email import"`.
+A property left empty on a document is simply one the mail did not carry -- a
+mail with no Date header gets no `Email date`.
 
 ## Usage
 

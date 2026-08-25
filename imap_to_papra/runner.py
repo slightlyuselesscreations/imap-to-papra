@@ -6,11 +6,11 @@ import logging
 import re
 from dataclasses import dataclass, field
 from email.message import Message
-from email.utils import parseaddr
+from email.utils import parsedate_to_datetime, parseaddr
 
 from imap_to_papra import attachments as attachments_mod
 from imap_to_papra import mail, notify
-from imap_to_papra.attachments import Selection
+from imap_to_papra.attachments import Attachment, Selection
 from imap_to_papra.config import Config
 from imap_to_papra.papra import PapraAuthError, PapraClient, PapraError, PapraUploadError
 
@@ -82,6 +82,15 @@ def _fallback_stem(message: Message) -> str:
     return stem[:60] or "attachment"
 
 
+EMAIL_PROPERTIES: dict[str, str] = {
+    "Email subject": "text",
+    "Email sender": "text",
+    "Email import": "boolean",
+    "Email date": "date",
+    "Attachment filename": "text",
+}
+
+
 def _header(message: Message, name: str) -> str:
     """A header flattened to a single line, safe to put in a notification."""
     return str(message.get(name, "") or "").replace("\n", " ").replace("\r", " ").strip()
@@ -102,38 +111,68 @@ def _describe(message: Message) -> str:
     return f"{subject_of(message)} from {sender_of(message)}"
 
 
-def _note(message: Message) -> str:
-    """The provenance block written to the document's notes in Papra.
+def _sent_at(message: Message) -> str:
+    """The Date header as ISO 8601, which is what Papra's date type accepts."""
+    raw = _header(message, "Date")
+    if not raw:
+        return ""
+    try:
+        return parsedate_to_datetime(raw).isoformat()
+    except (TypeError, ValueError):
+        log.debug("  unparseable Date header %r; leaving the date property unset", raw)
+        return ""
 
-    Attachment filenames are rarely descriptive; the subject usually is. Papra
-    does not index notes, so this does not help find the document — it explains
-    it once found.
+
+def _property_values(message: Message, attachment: Attachment) -> dict[str, object]:
+    """The custom property values for one document.
+
+    Deliberately not built from subject_of()/sender_of(): their "(no subject)"
+    placeholders are right for a notification and wrong for a data field, where
+    an absent header should simply leave the property unset.
     """
-    lines = [
-        f"{name}: {value}"
-        for name, value in (
-            ("From", _header(message, "From")),
-            ("Subject", subject_of(message)),
-            ("Date", _header(message, "Date")),
-        )
-        if value
-    ]
-    return "\n".join(lines)
+    values: dict[str, object] = {
+        "Email subject": _header(message, "Subject"),
+        "Email sender": parseaddr(_header(message, "From"))[1],
+        "Email import": True,
+        "Email date": _sent_at(message),
+        "Attachment filename": attachment.filename,
+    }
+    return {name: value for name, value in values.items() if value != ""}
 
 
-def _annotate(client: PapraClient, document_id: str, note: str, document: dict) -> None:
-    """Append the mail's provenance to the document, tolerating failure.
+def _resolve_properties(client: PapraClient) -> dict[str, str]:
+    """Look up (and create) this tool's custom properties, once per run.
 
-    By this point the document is uploaded and verified. Losing the note is a
-    cosmetic loss; refusing to delete the mail over it would leave the mailbox
+    A key without the custom-properties permissions still archives mail, so a
+    failure here is a warning and an empty map, not the end of the run.
+    """
+    try:
+        return client.property_definitions(EMAIL_PROPERTIES)
+    except PapraError as exc:
+        log.warning("custom properties unavailable, documents will be filed without them: %s", exc)
+        return {}
+
+
+def _apply_properties(
+    client: PapraClient,
+    document_id: str,
+    values: dict[str, object],
+    definitions: dict[str, str],
+) -> None:
+    """Label a stored document, tolerating failure.
+
+    The document is uploaded and verified by this point. Losing a label is
+    cosmetic; refusing to delete the mail over it would leave the mailbox
     filling up and the attachment re-uploaded on every run.
     """
-    if not note:
-        return
-    try:
-        client.add_note(document_id, note, existing=str(document.get("notes") or ""))
-    except PapraError as exc:
-        log.warning("  could not annotate document %s: %s", document_id, exc)
+    for name, value in values.items():
+        definition_id = definitions.get(name)
+        if not definition_id:
+            continue
+        try:
+            client.set_property(document_id, definition_id, value)
+        except PapraError as exc:
+            log.warning("  could not set %r on document %s: %s", name, document_id, exc)
 
 
 def _log_skips(selection: Selection) -> None:
@@ -146,11 +185,12 @@ def _log_skips(selection: Selection) -> None:
 
 def _process_message(
     client: PapraClient,
+    message: Message,
     selection: Selection,
     summary: Summary,
+    definitions: dict[str, str],
     *,
     dry_run: bool,
-    note: str = "",
 ) -> tuple[bool, list[str]]:
     """Upload and verify every attachment.
 
@@ -168,13 +208,19 @@ def _process_message(
                 attachment.size,
                 attachment.sha256[:12],
             )
+            log.debug("  would label it %s", _property_values(message, attachment))
             continue
 
         try:
             result = client.upload(attachment)
             if result.document_id:
-                document = client.verify(result.document_id, attachment)
-                _annotate(client, result.document_id, note, document)
+                client.verify(result.document_id, attachment)
+                _apply_properties(
+                    client,
+                    result.document_id,
+                    _property_values(message, attachment),
+                    definitions,
+                )
         except PapraUploadError as exc:
             log.error("  %s", exc)
             summary.errors.append(str(exc))
@@ -204,6 +250,9 @@ def run_once(cfg: Config, *, dry_run: bool = False) -> Summary:
             cfg.papra.base_url,
             info.get("name") or info.get("id") or "unnamed",
         )
+
+        # A dry run must not create anything, property definitions included.
+        definitions = {} if dry_run else _resolve_properties(client)
 
         with mail.connect(cfg.imap) as mailbox:
             uids = mailbox.unread_uids()
@@ -244,7 +293,7 @@ def run_once(cfg: Config, *, dry_run: bool = False) -> Summary:
                     continue
 
                 archived_ok, stored = _process_message(
-                    client, selection, summary, dry_run=dry_run, note=_note(message)
+                    client, message, selection, summary, definitions, dry_run=dry_run
                 )
                 if archived_ok:
                     summary.messages_archived += 1
