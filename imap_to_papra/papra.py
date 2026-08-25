@@ -7,6 +7,8 @@ The upload contract this relies on (docs.papra.app / papra-hq/papra):
       409 -> code "document.already_exists" (Papra deduplicates on SHA-256)
       413 -> code "document.size_too_large"
 
+    PATCH {base}/api/organizations/{orgId}/documents/{docId}   json {"notes": ...}
+
 The 409 is what makes this whole tool safe to re-run. If we upload a document
 and then crash before deleting the mail, the next pass re-uploads, gets a 409,
 and treats it as already archived. At-least-once delivery, exactly-once storage,
@@ -249,12 +251,14 @@ class PapraClient:
 
     # ----------------------------------------------------------- verification
 
-    def verify(self, document_id: str, attachment: Attachment) -> None:
+    def verify(self, document_id: str, attachment: Attachment) -> dict[str, Any]:
         """Read the document back and confirm it is really stored.
 
         When Papra exposes the stored SHA-256 we compare it against the bytes we
         sent, which is a genuine content-level guarantee rather than just
         "the id resolves".
+
+        Returns the stored document so callers can use it without a second GET.
         """
         response = self._request("GET", self._org_url(f"/{document_id}"))
 
@@ -291,6 +295,31 @@ class PapraClient:
             document_id,
             " (sha256 matched)" if stored_hash else "",
         )
+        return document
+
+    # ------------------------------------------------------------------ notes
+
+    def add_note(self, document_id: str, note: str, *, existing: str = "") -> None:
+        """Append `note` to a document's notes field.
+
+        Papra's PATCH replaces the field outright, so the existing text is read
+        from the document verify() already fetched and prepended here. Notes are
+        not part of the full-text index (documents_fts covers name and content
+        only), so this is context to read on the document, not something that
+        will ever turn up in a search.
+        """
+        existing = existing.strip()
+        if note in existing:
+            return
+
+        body = f"{existing}\n\n{note}" if existing else note
+        response = self._request("PATCH", self._org_url(f"/{document_id}"), json={"notes": body})
+
+        if not response.ok:
+            raise PapraError(
+                f"could not annotate document {document_id} "
+                f"(HTTP {response.status_code} {_error_code(response) or response.text[:200]})"
+            )
 
 
 def _stored_sha256(document: dict[str, Any]) -> str:

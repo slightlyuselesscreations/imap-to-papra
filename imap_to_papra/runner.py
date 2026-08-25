@@ -102,6 +102,40 @@ def _describe(message: Message) -> str:
     return f"{subject_of(message)} from {sender_of(message)}"
 
 
+def _note(message: Message) -> str:
+    """The provenance block written to the document's notes in Papra.
+
+    Attachment filenames are rarely descriptive; the subject usually is. Papra
+    does not index notes, so this does not help find the document — it explains
+    it once found.
+    """
+    lines = [
+        f"{name}: {value}"
+        for name, value in (
+            ("From", _header(message, "From")),
+            ("Subject", subject_of(message)),
+            ("Date", _header(message, "Date")),
+        )
+        if value
+    ]
+    return "\n".join(lines)
+
+
+def _annotate(client: PapraClient, document_id: str, note: str, document: dict) -> None:
+    """Append the mail's provenance to the document, tolerating failure.
+
+    By this point the document is uploaded and verified. Losing the note is a
+    cosmetic loss; refusing to delete the mail over it would leave the mailbox
+    filling up and the attachment re-uploaded on every run.
+    """
+    if not note:
+        return
+    try:
+        client.add_note(document_id, note, existing=str(document.get("notes") or ""))
+    except PapraError as exc:
+        log.warning("  could not annotate document %s: %s", document_id, exc)
+
+
 def _log_skips(selection: Selection) -> None:
     for skip in selection.skipped:
         if skip.blocking:
@@ -116,6 +150,7 @@ def _process_message(
     summary: Summary,
     *,
     dry_run: bool,
+    note: str = "",
 ) -> tuple[bool, list[str]]:
     """Upload and verify every attachment.
 
@@ -138,7 +173,8 @@ def _process_message(
         try:
             result = client.upload(attachment)
             if result.document_id:
-                client.verify(result.document_id, attachment)
+                document = client.verify(result.document_id, attachment)
+                _annotate(client, result.document_id, note, document)
         except PapraUploadError as exc:
             log.error("  %s", exc)
             summary.errors.append(str(exc))
@@ -207,7 +243,9 @@ def run_once(cfg: Config, *, dry_run: bool = False) -> Summary:
                     summary.messages_skipped += 1
                     continue
 
-                archived_ok, stored = _process_message(client, selection, summary, dry_run=dry_run)
+                archived_ok, stored = _process_message(
+                    client, selection, summary, dry_run=dry_run, note=_note(message)
+                )
                 if archived_ok:
                     summary.messages_archived += 1
                     if stored:
