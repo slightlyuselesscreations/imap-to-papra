@@ -30,15 +30,13 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 RUN useradd --system --create-home --uid 10001 papra \
- && mkdir -p /config /var/lock/imap-to-papra \
- && chown -R papra:papra /config /var/lock/imap-to-papra
+ && mkdir -p /var/lock/imap-to-papra \
+ && chown -R papra:papra /var/lock/imap-to-papra
 USER papra
 
-ENV IMAP_TO_PAPRA_CONFIG=/config/config.toml \
-    CRON_SCHEDULE="*/5 * * * *" \
+# Configuration arrives as environment variables, so there is nothing to mount.
+ENV CRON_SCHEDULE="*/5 * * * *" \
     PYTHONUNBUFFERED=1
-
-VOLUME ["/config"]
 
 # Overridable: `docker run --rm <image> imap-to-papra --check` works.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

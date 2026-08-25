@@ -3,7 +3,7 @@
 # Setup:
 #   useradd --system --no-create-home --shell /usr/sbin/nologin imap-to-papra
 #   install -d -o root -g imap-to-papra -m 0750 /etc/imap-to-papra
-#   install -o root -g imap-to-papra -m 0640 config.toml /etc/imap-to-papra/config.toml
+#   install -o root -g imap-to-papra -m 0640 .env /etc/imap-to-papra/.env
 
 [Unit]
 Description=Archive IMAP mail attachments into Papra
@@ -15,7 +15,11 @@ Type=oneshot
 User=imap-to-papra
 Group=imap-to-papra
 
-ExecStart=/usr/local/bin/imap-to-papra --config /etc/imap-to-papra/config.toml
+# The tool reads /etc/imap-to-papra/.env on its own, but naming it here means
+# systemd fails loudly if it is missing rather than the run failing on a
+# required setting.
+EnvironmentFile=/etc/imap-to-papra/.env
+ExecStart=/usr/local/bin/imap-to-papra
 
 RuntimeDirectory=imap-to-papra
 RuntimeDirectoryMode=0700

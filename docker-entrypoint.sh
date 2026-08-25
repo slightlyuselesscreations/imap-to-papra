@@ -5,9 +5,18 @@ set -eu
 CRON_SCHEDULE="${CRON_SCHEDULE:-*/5 * * * *}"
 CRONTAB_PATH="${CRONTAB_PATH:-/tmp/crontab}"
 
-if [ ! -f "${IMAP_TO_PAPRA_CONFIG:-/config/config.toml}" ]; then
-    echo "imap-to-papra: no config at ${IMAP_TO_PAPRA_CONFIG:-/config/config.toml}" >&2
-    echo "imap-to-papra: mount one, e.g. -v ./config.toml:/config/config.toml:ro" >&2
+# The tool validates everything itself, but it only runs when the schedule
+# fires. Checking the essentials here means a missing .env fails at container
+# start rather than quietly five minutes later.
+missing=""
+for name in IMAP_HOST IMAP_USERNAME IMAP_PASSWORD PAPRA_BASE_URL PAPRA_API_KEY PAPRA_ORGANIZATION_ID; do
+    eval "value=\${${name}:-}"
+    [ -n "${value}" ] || missing="${missing} ${name}"
+done
+
+if [ -n "${missing}" ]; then
+    echo "imap-to-papra: missing required setting(s):${missing}" >&2
+    echo "imap-to-papra: pass them in with env_file, e.g. cp .env.example .env" >&2
     exit 2
 fi
 

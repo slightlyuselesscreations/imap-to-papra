@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,10 +70,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "-c",
-        "--config",
+        "-e",
+        "--env-file",
         type=Path,
-        help="path to config.toml (default: $IMAP_TO_PAPRA_CONFIG, ./config.toml, /etc/imap-to-papra/config.toml)",
+        help="path to an .env file (default: $IMAP_TO_PAPRA_ENV, ./.env, /etc/imap-to-papra/.env). "
+             "Real environment variables always win over the file.",
     )
     parser.add_argument(
         "-n",
@@ -88,24 +90,31 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--log-level",
         choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
-        help="override logging.level from the config file",
+        help="override LOG_LEVEL",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args(argv)
 
 
 def _load_config(explicit: Path | None) -> Config:
-    path = explicit or config_mod.default_config_path()
-    if path is None:
-        raise ConfigError(
-            "no config file found. Pass --config PATH, set IMAP_TO_PAPRA_CONFIG, "
-            "or create ./config.toml (start from config.example.toml)."
-        )
-    if not path.is_file():
-        raise ConfigError(f"config file not found: {path}")
+    """Configuration comes from the environment, optionally topped up by a file.
 
-    cfg = config_mod.load(path)
-    log.debug("loaded configuration from %s", path)
+    An explicit --env-file that does not exist is an error; the default paths
+    are only a convenience, so their absence is not. Running with the variables
+    already exported, as a container does, is entirely normal.
+    """
+    path = explicit or config_mod.default_env_file()
+    if explicit is not None and not explicit.is_file():
+        raise ConfigError(f"env file not found: {explicit}")
+
+    if path is None and not any(name.startswith(config_mod.OWNED_PREFIXES) for name in os.environ):
+        raise ConfigError(
+            "nothing is configured. Copy .env.example to .env and fill it in, "
+            "pass --env-file PATH, or export the settings directly."
+        )
+
+    cfg = config_mod.load(path if path is not None and path.is_file() else None)
+    log.debug("configuration loaded from %s", path if path else "the environment")
     return cfg
 
 
@@ -143,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     _configure_logging(args.log_level or "INFO", "text")
 
     try:
-        cfg = _load_config(args.config)
+        cfg = _load_config(args.env_file)
     except ConfigError as exc:
         log.error("configuration error: %s", exc)
         return EXIT_CONFIG_ERROR

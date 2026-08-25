@@ -2,7 +2,8 @@
 
 MAILTO=""
 
-*/5 * * * * /usr/local/bin/imap-to-papra --config /etc/imap-to-papra/config.toml
+# Settings are read from /etc/imap-to-papra/.env, which cron cannot do itself.
+*/5 * * * * /usr/local/bin/imap-to-papra --env-file /etc/imap-to-papra/.env
 
 # Only mail on failure (needs moreutils):
-# */5 * * * * chronic /usr/local/bin/imap-to-papra --config /etc/imap-to-papra/config.toml
+# */5 * * * * chronic /usr/local/bin/imap-to-papra --env-file /etc/imap-to-papra/.env

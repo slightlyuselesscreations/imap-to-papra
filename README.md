@@ -29,13 +29,15 @@ services:
   imap-to-papra:
     image: ghcr.io/slightlyuselesscreations/imap-to-papra:latest
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       CRON_SCHEDULE: "*/5 * * * *"
-    volumes:
-      - ./config.toml:/config/config.toml:ro
 ```
 
-Make sure the `config.toml` is mounted into the container. Like in the example.
+The settings come from `.env`, so nothing secret ends up in the compose file
+and you can commit it with the rest of your stack. Keep `.env` out of version
+control.
 
 ### From source
 
@@ -47,21 +49,27 @@ pip install .
 
 ## Configuration
 
-Copy `config.example.toml` to `config.toml` and fill it in. Everything is
-commented in there. This is the minimal configuration required for the script to work:
+Copy `.env.example` to `.env` and fill it in. Everything is commented in there.
+This is the minimum needed for the script to work:
 
-```toml
-[imap]
-host = "mail.example.com"
-username = "papra-intake@example.com"
-password = "..."
-on_success = "delete"      # delete, move or mark_read
+```bash
+IMAP_HOST=mail.example.com
+IMAP_USERNAME=papra-intake@example.com
+IMAP_PASSWORD=...
 
-[papra]
-base_url = "https://papra.example.com"
-api_key = "..."
-organization_id = "org_..."
+# delete, move or mark_read
+IMAP_ON_SUCCESS=delete
+
+PAPRA_BASE_URL=https://papra.example.com
+PAPRA_API_KEY=...
+PAPRA_ORGANIZATION_ID=org_...
 ```
+
+Outside Docker the tool reads `./.env` or `/etc/imap-to-papra/.env` by itself.
+Environment variables that are already set take precedence over the file.
+
+Comments need their own line. Everything after the `=` is part of the value,
+which is also how Docker reads the file.
 
 ### API key permissions
 
@@ -105,8 +113,10 @@ mail with no Date header gets no `Email date`.
 ## Usage
 
 ```bash
-imap-to-papra --config config.toml
+imap-to-papra
 ```
+
+Point it at a specific file with `--env-file /etc/imap-to-papra/.env`.
 
 Check the IMAP and Papra settings without touching any mail:
 
@@ -125,8 +135,8 @@ outside Docker.
 
 ## Notes
 
-Start with `on_success = "mark_read"` or `"move"` if you want the first few runs
-to be reversible. Switch to `"delete"` once you trust it.
+Start with `IMAP_ON_SUCCESS=mark_read` or `move` if you want the first few runs
+to be reversible. Switch to `delete` once you trust it.
 
 An attachment that is too big for Papra will not be silently dropped. The
 message is left in the mailbox and reported as a failure, so nothing gets lost.

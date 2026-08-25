@@ -1,14 +1,20 @@
+# Secrets live in .env, never in this file, so this compose file is safe to
+# commit alongside the rest of your stack. Copy .env.example to .env, fill it
+# in, and add .env to your .gitignore.
 services:
   imap-to-papra:
     image: ghcr.io/slightlyuselesscreations/imap-to-papra:latest
     container_name: imap-to-papra
     restart: unless-stopped
 
+    # Every setting, mailbox password and Papra API key included, is passed in
+    # from here. Nothing is named in this file, so adding a setting to .env is
+    # all it takes.
+    env_file:
+      - .env
+
     environment:
       CRON_SCHEDULE: "*/5 * * * *"
-
-    volumes:
-      - ./config.toml:/config/config.toml:ro
 
     logging:
       driver: json-file

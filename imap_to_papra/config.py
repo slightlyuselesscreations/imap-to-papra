@@ -1,23 +1,43 @@
-"""Load and validate the TOML configuration."""
+"""Load and validate the configuration from the environment.
+
+Everything is read from environment variables, which is what a container hands
+you and what an .env file fills. Nothing is read from a file the process has to
+be pointed at, so the secrets live in exactly one place: an .env that stays out
+of version control while the compose file that consumes it can be committed.
+
+An .env file is still parsed directly when one is present, so systemd timers and
+cron entries work without a shell wrapper. Real environment variables always win
+over the file, which is what makes `docker compose` (env_file) and `docker run -e`
+behave the way you would expect.
+"""
 
 from __future__ import annotations
 
+import logging
 import os
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Mapping
 
-ENV_PREFIX = "IMAP_TO_PAPRA"
+log = logging.getLogger(__name__)
+
+ENV_FILE_VAR = "IMAP_TO_PAPRA_ENV"
+
+DEFAULT_ENV_PATHS = (
+    Path(".env"),
+    Path("/etc/imap-to-papra/.env"),
+)
 
 ON_SUCCESS_CHOICES = ("delete", "move", "mark_read")
 LOG_FORMAT_CHOICES = ("text", "json")
 NOTIFY_ON_CHOICES = ("success", "error")
 
-DEFAULT_CONFIG_PATHS = (
-    Path("config.toml"),
-    Path("/etc/imap-to-papra/config.toml"),
-)
+# Variables under these prefixes are ours, so an unrecognised one is a typo
+# worth reporting rather than something another tool put in the environment.
+OWNED_PREFIXES = ("IMAP_", "PAPRA_", "ATTACHMENTS_", "NTFY_", "LOG_", "LOCK_")
+
+_TRUE = frozenset({"1", "true", "yes", "on"})
+_FALSE = frozenset({"0", "false", "no", "off"})
 
 
 class ConfigError(Exception):
@@ -94,148 +114,176 @@ class Config:
 # Primitive readers
 # --------------------------------------------------------------------------- #
 
-def _table(raw: dict[str, Any], name: str) -> dict[str, Any]:
-    value = raw.get(name, {})
-    if not isinstance(value, dict):
-        raise ConfigError(f"[{name}] must be a table, got {type(value).__name__}")
-    return value
+class _Env:
+    """The environment, remembering which names were actually asked for.
+
+    That record is what makes the typo check below self-maintaining: anything
+    under one of our prefixes that no builder ever read is a name we do not
+    know, without a hand-kept list to fall out of date.
+    """
+
+    def __init__(self, values: Mapping[str, str]) -> None:
+        self._values = values
+        self.seen: set[str] = {ENV_FILE_VAR}
+
+    def get(self, name: str) -> str | None:
+        self.seen.add(name)
+        return self._values.get(name)
+
+    def unknown(self) -> list[str]:
+        return sorted(
+            name
+            for name in self._values
+            if name.startswith(OWNED_PREFIXES) and name not in self.seen
+        )
 
 
-def _str(table: dict[str, Any], key: str, section: str, default: str = "") -> str:
-    value = table.get(key, default)
-    if not isinstance(value, str):
-        raise ConfigError(f"{section}.{key} must be a string")
-    return value.strip()
+def _str(env: _Env, name: str, default: str = "") -> str:
+    value = env.get(name)
+    return default if value is None else value.strip()
 
 
-def _bool(table: dict[str, Any], key: str, section: str, default: bool) -> bool:
-    value = table.get(key, default)
-    if not isinstance(value, bool):
-        raise ConfigError(f"{section}.{key} must be true or false")
-    return value
+def _bool(env: _Env, name: str, default: bool) -> bool:
+    value = env.get(name)
+    if value is None or not value.strip():
+        return default
+
+    folded = value.strip().lower()
+    if folded in _TRUE:
+        return True
+    if folded in _FALSE:
+        return False
+    raise ConfigError(
+        f"{name} must be one of {', '.join(sorted(_TRUE | _FALSE))}; got {value.strip()!r}"
+    )
 
 
-def _int(table: dict[str, Any], key: str, section: str, default: int, minimum: int = 0) -> int:
-    value = table.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ConfigError(f"{section}.{key} must be an integer")
-    if value < minimum:
-        raise ConfigError(f"{section}.{key} must be >= {minimum}, got {value}")
-    return value
+def _int(env: _Env, name: str, default: int, minimum: int = 0) -> int:
+    value = env.get(name)
+    if value is None or not value.strip():
+        return default
+
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        raise ConfigError(f"{name} must be a whole number; got {value.strip()!r}") from None
+    if parsed < minimum:
+        raise ConfigError(f"{name} must be >= {minimum}, got {parsed}")
+    return parsed
 
 
-def _str_list(table: dict[str, Any], key: str, section: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    value = table.get(key, list(default))
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ConfigError(f"{section}.{key} must be an array of strings")
-    return tuple(item.strip() for item in value if item.strip())
+def _list(env: _Env, name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """A comma-separated list. Unset means the default; set-but-empty means none."""
+    value = env.get(name)
+    if value is None:
+        return default
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
-def _extensions(table: dict[str, Any], key: str, section: str, default: tuple[str, ...]) -> tuple[str, ...]:
+def _extensions(env: _Env, name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     """Normalise an extension list so `.PDF`, `PDF` and `pdf` all behave the same."""
-    return tuple(item.lower().lstrip(".") for item in _str_list(table, key, section, default))
+    return tuple(item.lower().lstrip(".") for item in _list(env, name, default))
 
 
 # --------------------------------------------------------------------------- #
 # Section builders
 # --------------------------------------------------------------------------- #
 
-def _build_imap(raw: dict[str, Any]) -> ImapConfig:
-    table = _table(raw, "imap")
-    section = "imap"
-
-    host = _str(table, "host", section)
+def _build_imap(env: _Env) -> ImapConfig:
+    host = _str(env, "IMAP_HOST")
     if not host:
-        raise ConfigError("imap.host is required")
+        raise ConfigError("IMAP_HOST is required")
 
-    username = _str(table, "username", section)
+    username = _str(env, "IMAP_USERNAME")
     if not username:
-        raise ConfigError("imap.username is required")
+        raise ConfigError("IMAP_USERNAME is required")
 
-    password = _str(table, "password", section)
+    password = _str(env, "IMAP_PASSWORD")
     if not password:
-        raise ConfigError("imap.password is required")
+        raise ConfigError("IMAP_PASSWORD is required")
 
-    use_ssl = _bool(table, "ssl", section, True)
-    starttls = _bool(table, "starttls", section, False)
+    use_ssl = _bool(env, "IMAP_SSL", True)
+    starttls = _bool(env, "IMAP_STARTTLS", False)
     if use_ssl and starttls:
-        raise ConfigError("imap.ssl and imap.starttls are mutually exclusive: implicit TLS already encrypts the connection")
+        raise ConfigError(
+            "IMAP_SSL and IMAP_STARTTLS are mutually exclusive: implicit TLS already encrypts the connection"
+        )
     if not use_ssl and not starttls:
         raise ConfigError(
-            "imap.ssl and imap.starttls are both false, which would send your password "
-            "over an unencrypted connection. Use ssl = true (port 993), "
-            "or starttls = true (port 143)."
+            "IMAP_SSL and IMAP_STARTTLS are both false, which would send your password "
+            "over an unencrypted connection. Use IMAP_SSL=true (port 993), "
+            "or IMAP_STARTTLS=true (port 143)."
         )
 
-    on_success = _str(table, "on_success", section, "delete").lower()
+    on_success = _str(env, "IMAP_ON_SUCCESS", "delete").lower()
     if on_success not in ON_SUCCESS_CHOICES:
-        raise ConfigError(f"imap.on_success must be one of {', '.join(ON_SUCCESS_CHOICES)}, got {on_success!r}")
+        raise ConfigError(
+            f"IMAP_ON_SUCCESS must be one of {', '.join(ON_SUCCESS_CHOICES)}, got {on_success!r}"
+        )
 
-    move_to = _str(table, "move_to", section, "Processed")
+    move_to = _str(env, "IMAP_MOVE_TO", "Processed")
     if on_success == "move" and not move_to:
-        raise ConfigError("imap.move_to is required when imap.on_success = \"move\"")
+        raise ConfigError('IMAP_MOVE_TO is required when IMAP_ON_SUCCESS="move"')
 
     return ImapConfig(
         host=host,
         username=username,
         password=password,
-        port=_int(table, "port", section, 993 if use_ssl else 143, minimum=1),
-        mailbox=_str(table, "mailbox", section, "INBOX") or "INBOX",
+        port=_int(env, "IMAP_PORT", 993 if use_ssl else 143, minimum=1),
+        mailbox=_str(env, "IMAP_MAILBOX", "INBOX") or "INBOX",
         ssl=use_ssl,
         starttls=starttls,
-        verify_ssl=_bool(table, "verify_ssl", section, True),
+        verify_ssl=_bool(env, "IMAP_VERIFY_SSL", True),
         on_success=on_success,
         move_to=move_to,
-        batch_size=_int(table, "batch_size", section, 50),
-        timeout_seconds=_int(table, "timeout_seconds", section, 60, minimum=1),
+        batch_size=_int(env, "IMAP_BATCH_SIZE", 50),
+        timeout_seconds=_int(env, "IMAP_TIMEOUT_SECONDS", 60, minimum=1),
     )
 
 
-def _build_papra(raw: dict[str, Any]) -> PapraConfig:
-    table = _table(raw, "papra")
-    section = "papra"
-
-    base_url = _str(table, "base_url", section).rstrip("/")
+def _build_papra(env: _Env) -> PapraConfig:
+    base_url = _str(env, "PAPRA_BASE_URL").rstrip("/")
     if not base_url:
-        raise ConfigError("papra.base_url is required")
+        raise ConfigError("PAPRA_BASE_URL is required")
     if not base_url.startswith(("http://", "https://")):
-        raise ConfigError(f"papra.base_url must start with http:// or https://, got {base_url!r}")
+        raise ConfigError(f"PAPRA_BASE_URL must start with http:// or https://, got {base_url!r}")
 
-    api_key = _str(table, "api_key", section)
+    api_key = _str(env, "PAPRA_API_KEY")
     if not api_key:
-        raise ConfigError("papra.api_key is required")
+        raise ConfigError("PAPRA_API_KEY is required")
 
-    organization_id = _str(table, "organization_id", section)
+    organization_id = _str(env, "PAPRA_ORGANIZATION_ID")
     if not organization_id:
-        raise ConfigError("papra.organization_id is required")
+        raise ConfigError("PAPRA_ORGANIZATION_ID is required")
 
     return PapraConfig(
         base_url=base_url,
         api_key=api_key,
         organization_id=organization_id,
-        verify_ssl=_bool(table, "verify_ssl", section, True),
-        timeout_seconds=_int(table, "timeout_seconds", section, 60, minimum=1),
-        ocr_languages=_str_list(table, "ocr_languages", section, ()),
-        max_retries=_int(table, "max_retries", section, 3, minimum=1),
+        verify_ssl=_bool(env, "PAPRA_VERIFY_SSL", True),
+        timeout_seconds=_int(env, "PAPRA_TIMEOUT_SECONDS", 60, minimum=1),
+        ocr_languages=_list(env, "PAPRA_OCR_LANGUAGES", ()),
+        max_retries=_int(env, "PAPRA_MAX_RETRIES", 3, minimum=1),
     )
 
 
-def _build_attachments(raw: dict[str, Any]) -> AttachmentsConfig:
-    table = _table(raw, "attachments")
-    section = "attachments"
-
+def _build_attachments(env: _Env) -> AttachmentsConfig:
     defaults = AttachmentsConfig()
-    min_size = _int(table, "min_size_bytes", section, defaults.min_size_bytes)
-    max_size = _int(table, "max_size_bytes", section, defaults.max_size_bytes, minimum=1)
-    if min_size >= max_size:
-        raise ConfigError(f"attachments.min_size_bytes ({min_size}) must be smaller than max_size_bytes ({max_size})")
 
-    allowed = _extensions(table, "allowed", section, defaults.allowed)
-    denied = _extensions(table, "denied", section, defaults.denied)
+    min_size = _int(env, "ATTACHMENTS_MIN_SIZE_BYTES", defaults.min_size_bytes)
+    max_size = _int(env, "ATTACHMENTS_MAX_SIZE_BYTES", defaults.max_size_bytes, minimum=1)
+    if min_size >= max_size:
+        raise ConfigError(
+            f"ATTACHMENTS_MIN_SIZE_BYTES ({min_size}) must be smaller than "
+            f"ATTACHMENTS_MAX_SIZE_BYTES ({max_size})"
+        )
+
+    allowed = _extensions(env, "ATTACHMENTS_ALLOWED", defaults.allowed)
+    denied = _extensions(env, "ATTACHMENTS_DENIED", defaults.denied)
     overlap = sorted(set(allowed) & set(denied))
     if overlap:
         raise ConfigError(
-            f"attachments.allowed and attachments.denied both list: {', '.join(overlap)} — "
+            f"ATTACHMENTS_ALLOWED and ATTACHMENTS_DENIED both list: {', '.join(overlap)} — "
             "an extension cannot be simultaneously required and forbidden"
         )
 
@@ -244,53 +292,51 @@ def _build_attachments(raw: dict[str, Any]) -> AttachmentsConfig:
         denied=denied,
         min_size_bytes=min_size,
         max_size_bytes=max_size,
-        skip_inline=_bool(table, "skip_inline", section, defaults.skip_inline),
+        skip_inline=_bool(env, "ATTACHMENTS_SKIP_INLINE", defaults.skip_inline),
     )
 
 
-def _build_ntfy(raw: dict[str, Any]) -> NtfyConfig:
-    table = _table(raw, "ntfy")
-    section = "ntfy"
+def _build_ntfy(env: _Env) -> NtfyConfig:
     defaults = NtfyConfig()
 
-    enabled = _bool(table, "enabled", section, defaults.enabled)
-    server = _str(table, "server", section, defaults.server).rstrip("/")
-    topic = _str(table, "topic", section, defaults.topic)
+    enabled = _bool(env, "NTFY_ENABLED", defaults.enabled)
+    server = _str(env, "NTFY_SERVER", defaults.server).rstrip("/")
+    topic = _str(env, "NTFY_TOPIC", defaults.topic)
 
     if enabled:
         if not server.startswith(("http://", "https://")):
-            raise ConfigError(f"ntfy.server must start with http:// or https://, got {server!r}")
+            raise ConfigError(f"NTFY_SERVER must start with http:// or https://, got {server!r}")
         if not topic:
-            raise ConfigError("ntfy.topic is required when ntfy.enabled = true")
+            raise ConfigError("NTFY_TOPIC is required when NTFY_ENABLED=true")
 
-    notify_on = tuple(item.lower() for item in _str_list(table, "notify_on", section, defaults.notify_on))
+    notify_on = tuple(item.lower() for item in _list(env, "NTFY_NOTIFY_ON", defaults.notify_on))
     unknown = sorted(set(notify_on) - set(NOTIFY_ON_CHOICES))
     if unknown:
-        raise ConfigError(f"ntfy.notify_on may only contain {', '.join(NOTIFY_ON_CHOICES)}; got {', '.join(unknown)}")
+        raise ConfigError(
+            f"NTFY_NOTIFY_ON may only contain {', '.join(NOTIFY_ON_CHOICES)}; got {', '.join(unknown)}"
+        )
 
     return NtfyConfig(
         enabled=enabled,
         server=server,
         topic=topic,
-        token=_str(table, "token", section),
-        priority=_str(table, "priority", section, defaults.priority) or defaults.priority,
+        token=_str(env, "NTFY_TOKEN"),
+        priority=_str(env, "NTFY_PRIORITY", defaults.priority) or defaults.priority,
         notify_on=notify_on,
-        timeout_seconds=_int(table, "timeout_seconds", section, defaults.timeout_seconds, minimum=1),
+        timeout_seconds=_int(env, "NTFY_TIMEOUT_SECONDS", defaults.timeout_seconds, minimum=1),
     )
 
 
-def _build_logging(raw: dict[str, Any]) -> LoggingConfig:
-    table = _table(raw, "logging")
-    section = "logging"
+def _build_logging(env: _Env) -> LoggingConfig:
     defaults = LoggingConfig()
 
-    level = _str(table, "level", section, defaults.level).upper() or defaults.level
+    level = _str(env, "LOG_LEVEL", defaults.level).upper() or defaults.level
     if level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
-        raise ConfigError(f"logging.level must be DEBUG, INFO, WARNING, ERROR or CRITICAL; got {level!r}")
+        raise ConfigError(f"LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR or CRITICAL; got {level!r}")
 
-    fmt = _str(table, "format", section, defaults.format).lower() or defaults.format
+    fmt = _str(env, "LOG_FORMAT", defaults.format).lower() or defaults.format
     if fmt not in LOG_FORMAT_CHOICES:
-        raise ConfigError(f"logging.format must be one of {', '.join(LOG_FORMAT_CHOICES)}; got {fmt!r}")
+        raise ConfigError(f"LOG_FORMAT must be one of {', '.join(LOG_FORMAT_CHOICES)}; got {fmt!r}")
 
     return LoggingConfig(level=level, format=fmt)
 
@@ -299,46 +345,89 @@ def _build_logging(raw: dict[str, Any]) -> LoggingConfig:
 # Entry points
 # --------------------------------------------------------------------------- #
 
-def from_dict(raw: dict[str, Any]) -> Config:
-    """Build a validated Config from an already-parsed TOML mapping."""
-    known = {"imap", "papra", "attachments", "ntfy", "logging", "lock_file"}
-    for unexpected in sorted(set(raw) - known):
-        raise ConfigError(f"unknown top-level key {unexpected!r} (expected one of: {', '.join(sorted(known))})")
+def from_env(values: Mapping[str, str]) -> Config:
+    """Build a validated Config from a mapping of environment variables."""
+    env = _Env(values)
 
-    lock_file = raw.get("lock_file", "")
-    if not isinstance(lock_file, str):
-        raise ConfigError("lock_file must be a string path")
-
-    return Config(
-        imap=_build_imap(raw),
-        papra=_build_papra(raw),
-        attachments=_build_attachments(raw),
-        ntfy=_build_ntfy(raw),
-        logging=_build_logging(raw),
-        lock_file=lock_file.strip(),
+    config = Config(
+        imap=_build_imap(env),
+        papra=_build_papra(env),
+        attachments=_build_attachments(env),
+        ntfy=_build_ntfy(env),
+        logging=_build_logging(env),
+        lock_file=_str(env, "LOCK_FILE"),
     )
 
+    # A misspelled variable would otherwise be silently ignored and the default
+    # used instead, which is a bad way to discover that OCR was never on.
+    unknown = env.unknown()
+    if unknown:
+        log.warning(
+            "ignoring unrecognised setting(s): %s — check the spelling against .env.example",
+            ", ".join(unknown),
+        )
 
-def default_config_path() -> Path | None:
-    """First existing path among $IMAP_TO_PAPRA_CONFIG, ./config.toml and /etc/..."""
-    from_env = os.environ.get(f"{ENV_PREFIX}_CONFIG")
-    if from_env:
-        return Path(from_env)
-    for candidate in DEFAULT_CONFIG_PATHS:
+    return config
+
+
+def parse_env_file(text: str) -> dict[str, str]:
+    """Parse KEY=VALUE lines the way an .env file is normally written.
+
+    Comments, blank lines, a leading `export`, and values wrapped in single or
+    double quotes are all handled. Anything else is passed through verbatim,
+    including `#` inside a value, because a password may well contain one.
+    """
+    values: dict[str, str] = {}
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):].lstrip()
+
+        name, separator, value = stripped.partition("=")
+        if not separator:
+            continue
+
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+
+        if name:
+            values[name] = value
+
+    return values
+
+
+def default_env_file() -> Path | None:
+    """First existing path among $IMAP_TO_PAPRA_ENV, ./.env and /etc/imap-to-papra/.env."""
+    from_env_var = os.environ.get(ENV_FILE_VAR)
+    if from_env_var:
+        return Path(from_env_var)
+    for candidate in DEFAULT_ENV_PATHS:
         if candidate.is_file():
             return candidate
     return None
 
 
-def load(path: Path) -> Config:
-    """Read and validate the config file at `path`."""
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ConfigError(f"config file not found: {path}") from exc
-    except OSError as exc:
-        raise ConfigError(f"cannot read config file {path}: {exc.strerror}") from exc
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
+def load(env_file: Path | None = None) -> Config:
+    """Read the environment, layered over an .env file when there is one.
 
-    return from_dict(raw)
+    Real environment variables win: a container sets them directly, and an .env
+    left lying around in the working directory must not override that.
+    """
+    values: dict[str, str] = {}
+
+    if env_file is not None:
+        try:
+            values.update(parse_env_file(env_file.read_text(encoding="utf-8")))
+        except FileNotFoundError as exc:
+            raise ConfigError(f"env file not found: {env_file}") from exc
+        except OSError as exc:
+            raise ConfigError(f"cannot read env file {env_file}: {exc.strerror}") from exc
+        log.debug("loaded %d setting(s) from %s", len(values), env_file)
+
+    values.update(os.environ)
+    return from_env(values)

@@ -1,3 +1,8 @@
+.env
+.env.local
+
+# Configuration moved to .env; still ignored so an old file with real
+# credentials cannot be committed by accident.
 config.toml
 *.local.toml
 secrets/

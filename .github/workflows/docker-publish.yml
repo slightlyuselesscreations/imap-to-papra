@@ -52,11 +52,13 @@ jobs:
           imap-to-papra --version
           imap-to-papra --help
 
-      - name: Invalid config exits 2 rather than crashing
+      - name: Incomplete configuration exits 2 rather than crashing
+        env:
+          IMAP_HOST: mail.example.com
+          PAPRA_BASE_URL: https://papra.example.com
         run: |
-          printf '[imap]\nhost = "h"\n[papra]\nbase_url = "https://x"\n' > bad.toml
           set +e
-          imap-to-papra --config bad.toml
+          imap-to-papra
           code=$?
           set -e
           if [ "$code" -ne 2 ]; then
