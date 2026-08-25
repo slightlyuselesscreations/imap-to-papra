@@ -10,8 +10,7 @@ Papra can already ingest documents by email, but both documented options route y
 * Picks out the real attachments, skipping inline images (signature logos and the
   like) and noise such as smime.p7s
 * Uploads each one to Papra and verifies it by reading it back
-* Labels the document with the mail it came from, using Papra custom
-  properties, so a file called `doc_00123.pdf` is still findable
+* Labels the document with custom properties with information from where the mail it came from
 * Deletes the message, but only if every attachment made it
 * Optionally sends an ntfy notification saying what was filed, from whom, and
   with what subject
