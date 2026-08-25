@@ -65,12 +65,6 @@ PAPRA_API_KEY=...
 PAPRA_ORGANIZATION_ID=org_...
 ```
 
-Outside Docker the tool reads `./.env` or `/etc/imap-to-papra/.env` by itself.
-Environment variables that are already set take precedence over the file.
-
-Comments need their own line. Everything after the `=` is part of the value,
-which is also how Docker reads the file.
-
 ### API key permissions
 
 Create the key in Papra under **Settings -> API keys** and tick:
