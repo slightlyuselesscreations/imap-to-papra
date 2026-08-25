@@ -15,9 +15,7 @@ Type=oneshot
 User=imap-to-papra
 Group=imap-to-papra
 
-# The tool reads /etc/imap-to-papra/.env on its own, but naming it here means
-# systemd fails loudly if it is missing rather than the run failing on a
-# required setting.
+# Named here so systemd fails if the file is missing.
 EnvironmentFile=/etc/imap-to-papra/.env
 ExecStart=/usr/local/bin/imap-to-papra
 

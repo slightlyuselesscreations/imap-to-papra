@@ -1,8 +1,7 @@
 .env
 .env.local
 
-# Configuration moved to .env; still ignored so an old file with real
-# credentials cannot be committed by accident.
+# Superseded by .env, still ignored so an old copy cannot be committed.
 config.toml
 *.local.toml
 secrets/

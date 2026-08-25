@@ -1,14 +1,7 @@
-"""Load and validate the configuration from the environment.
+"""Load and validate the configuration from environment variables.
 
-Everything is read from environment variables, which is what a container hands
-you and what an .env file fills. Nothing is read from a file the process has to
-be pointed at, so the secrets live in exactly one place: an .env that stays out
-of version control while the compose file that consumes it can be committed.
-
-An .env file is still parsed directly when one is present, so systemd timers and
-cron entries work without a shell wrapper. Real environment variables always win
-over the file, which is what makes `docker compose` (env_file) and `docker run -e`
-behave the way you would expect.
+An .env file is parsed when one is present. Real environment variables take
+precedence over it.
 """
 
 from __future__ import annotations
@@ -32,8 +25,7 @@ ON_SUCCESS_CHOICES = ("delete", "move", "mark_read")
 LOG_FORMAT_CHOICES = ("text", "json")
 NOTIFY_ON_CHOICES = ("success", "error")
 
-# Variables under these prefixes are ours, so an unrecognised one is a typo
-# worth reporting rather than something another tool put in the environment.
+# Prefixes owned by this tool. Unrecognised names under them are reported.
 OWNED_PREFIXES = ("IMAP_", "PAPRA_", "ATTACHMENTS_", "NTFY_", "LOG_", "LOCK_")
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
@@ -115,11 +107,9 @@ class Config:
 # --------------------------------------------------------------------------- #
 
 class _Env:
-    """The environment, remembering which names were actually asked for.
+    """Environment mapping that records which names were read.
 
-    That record is what makes the typo check below self-maintaining: anything
-    under one of our prefixes that no builder ever read is a name we do not
-    know, without a hand-kept list to fall out of date.
+    Names under OWNED_PREFIXES that were never read are reported as unknown.
     """
 
     def __init__(self, values: Mapping[str, str]) -> None:
@@ -173,7 +163,7 @@ def _int(env: _Env, name: str, default: int, minimum: int = 0) -> int:
 
 
 def _list(env: _Env, name: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    """A comma-separated list. Unset means the default; set-but-empty means none."""
+    """A comma-separated list. Unset means the default; set but empty means none."""
     value = env.get(name)
     if value is None:
         return default
@@ -358,8 +348,6 @@ def from_env(values: Mapping[str, str]) -> Config:
         lock_file=_str(env, "LOCK_FILE"),
     )
 
-    # A misspelled variable would otherwise be silently ignored and the default
-    # used instead, which is a bad way to discover that OCR was never on.
     unknown = env.unknown()
     if unknown:
         log.warning(
@@ -371,11 +359,10 @@ def from_env(values: Mapping[str, str]) -> Config:
 
 
 def parse_env_file(text: str) -> dict[str, str]:
-    """Parse KEY=VALUE lines the way an .env file is normally written.
+    """Parse KEY=VALUE lines from an .env file.
 
-    Comments, blank lines, a leading `export`, and values wrapped in single or
-    double quotes are all handled. Anything else is passed through verbatim,
-    including `#` inside a value, because a password may well contain one.
+    Blank lines, # comments, a leading `export` and surrounding single or double
+    quotes are handled. A # inside a value is kept.
     """
     values: dict[str, str] = {}
 
@@ -413,10 +400,9 @@ def default_env_file() -> Path | None:
 
 
 def load(env_file: Path | None = None) -> Config:
-    """Read the environment, layered over an .env file when there is one.
+    """Read the environment, layered over an .env file when one is given.
 
-    Real environment variables win: a container sets them directly, and an .env
-    left lying around in the working directory must not override that.
+    Real environment variables take precedence over the file.
     """
     values: dict[str, str] = {}
 

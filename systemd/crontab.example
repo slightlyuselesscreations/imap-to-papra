@@ -2,7 +2,7 @@
 
 MAILTO=""
 
-# Settings are read from /etc/imap-to-papra/.env, which cron cannot do itself.
+# cron does not read .env, so the path is passed explicitly.
 */5 * * * * /usr/local/bin/imap-to-papra --env-file /etc/imap-to-papra/.env
 
 # Only mail on failure (needs moreutils):

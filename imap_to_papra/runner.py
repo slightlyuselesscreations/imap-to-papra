@@ -120,14 +120,10 @@ def _iso_date(raw: str) -> str:
 
 @dataclass(frozen=True)
 class MailFacts:
-    """Who really sent a message, and about what.
+    """Sender, subject and send date of a message.
 
-    A forwarded mail's own From is whoever forwarded it, which files the
-    document under the wrong person. When the original is recoverable its
-    headers win, so both a forward and the mail it carried land the same way.
-
-    Fields are empty rather than placeholders when a header is absent: these
-    feed custom property values, where an unset property is the honest answer.
+    For a forwarded mail these come from the original where it can be
+    recovered. Fields are empty when the header is absent.
     """
 
     sender: str
@@ -138,8 +134,7 @@ class MailFacts:
     @classmethod
     def of(cls, message: Message) -> "MailFacts":
         original = forwarded.original_headers(message)
-        # The original's date is the one clients mangle most, so an unparseable
-        # one falls back to the forward's own date rather than being dropped.
+        # An unparseable original date falls back to the forward's own date.
         return cls(
             sender=parseaddr(original.get("from") or _header(message, "From"))[1],
             subject=original.get("subject") or _header(message, "Subject"),
@@ -154,11 +149,7 @@ class MailFacts:
 def _property_values(facts: MailFacts, attachment: Attachment) -> dict[str, object]:
     """The custom property values for one document.
 
-    A forward-as-attachment archives the carried mail itself as well as what was
-    inside it. That wrapper has no attachment filename worth recording: names
-    like "Original.eml" are invented by the forwarding client and say nothing
-    about the document, so the property is left unset rather than filled with
-    noise.
+    A carried message/rfc822 attachment gets no filename property.
     """
     values: dict[str, object] = {
         "Email subject": facts.subject,
@@ -175,10 +166,9 @@ def _is_carried_mail(attachment: Attachment) -> bool:
 
 
 def _resolve_properties(client: PapraClient) -> dict[str, str]:
-    """Look up (and create) this tool's custom properties, once per run.
+    """Look up the custom properties, creating any that are missing.
 
-    A key without the custom-properties permissions still archives mail, so a
-    failure here is a warning and an empty map, not the end of the run.
+    Returns {} and logs a warning if they are unavailable.
     """
     try:
         return client.property_definitions(EMAIL_PROPERTIES)
@@ -193,11 +183,9 @@ def _apply_properties(
     values: dict[str, object],
     definitions: dict[str, str],
 ) -> None:
-    """Label a stored document, tolerating failure.
+    """Set the custom property values on a stored document.
 
-    The document is uploaded and verified by this point. Losing a label is
-    cosmetic; refusing to delete the mail over it would leave the mailbox
-    filling up and the attachment re-uploaded on every run.
+    Failures are logged and otherwise ignored.
     """
     for name, value in values.items():
         definition_id = definitions.get(name)
@@ -285,7 +273,7 @@ def run_once(cfg: Config, *, dry_run: bool = False) -> Summary:
             info.get("name") or info.get("id") or "unnamed",
         )
 
-        # A dry run must not create anything, property definitions included.
+        # A dry run creates nothing, property definitions included.
         definitions = {} if dry_run else _resolve_properties(client)
 
         with mail.connect(cfg.imap) as mailbox:

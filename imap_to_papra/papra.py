@@ -33,8 +33,7 @@ from imap_to_papra.config import PapraConfig
 log = logging.getLogger(__name__)
 
 REQUIRED_PERMISSIONS = ("documents:create", "documents:read")
-# Only needed for the custom properties, which are best-effort, so a key
-# without them still archives mail. Preflight warns rather than aborting.
+# Needed only for the custom properties. Preflight warns when they are missing.
 PROPERTY_PERMISSIONS = ("custom-properties:read", "custom-properties:create", "documents:update")
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
@@ -272,11 +271,8 @@ class PapraClient:
     def property_definitions(self, wanted: dict[str, str]) -> dict[str, str]:
         """Map each wanted property name to its definition id, creating misses.
 
-        Papra does not enforce unique property names, so creating blindly would
-        add a second "Email subject" on every run. The organization's existing
-        definitions are listed first and matched case-insensitively.
-
-        Definition ids are stable, so this runs once per pass, not per document.
+        Existing definitions are matched by name, case-insensitively. Papra does
+        not enforce unique names.
         """
         response = self._request("GET", self._properties_url())
         if response.status_code in (401, 403):
@@ -386,7 +382,7 @@ class PapraClient:
 
 
 def _definition_list(response: requests.Response) -> list[dict[str, Any]]:
-    """The definitions out of a list response, whatever envelope Papra uses."""
+    """The definitions from a list response, accepting either envelope."""
     try:
         body = response.json()
     except ValueError:

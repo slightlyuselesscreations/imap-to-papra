@@ -34,7 +34,7 @@ RUN useradd --system --create-home --uid 10001 papra \
  && chown -R papra:papra /var/lock/imap-to-papra
 USER papra
 
-# Configuration arrives as environment variables, so there is nothing to mount.
+# Configuration comes from environment variables; nothing is mounted.
 ENV CRON_SCHEDULE="*/5 * * * *" \
     PYTHONUNBUFFERED=1
 

@@ -5,9 +5,7 @@ set -eu
 CRON_SCHEDULE="${CRON_SCHEDULE:-*/5 * * * *}"
 CRONTAB_PATH="${CRONTAB_PATH:-/tmp/crontab}"
 
-# The tool validates everything itself, but it only runs when the schedule
-# fires. Checking the essentials here means a missing .env fails at container
-# start rather than quietly five minutes later.
+# Fail at container start rather than at the first scheduled run.
 missing=""
 for name in IMAP_HOST IMAP_USERNAME IMAP_PASSWORD PAPRA_BASE_URL PAPRA_API_KEY PAPRA_ORGANIZATION_ID; do
     eval "value=\${${name}:-}"

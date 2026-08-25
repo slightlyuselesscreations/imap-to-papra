@@ -1,19 +1,9 @@
-"""Recover the headers of the message that was forwarded to us.
+"""Recover the headers of a forwarded message.
 
-Forwarding rewrites From to whoever forwarded it, so an invoice a colleague
-passes on would be filed under the colleague rather than the company that sent
-it. Two shapes reach the intake mailbox:
-
-  * forward as attachment - the original rides along as a message/rfc822 part
-    and its real headers can be read straight off it. Reliable.
-  * ordinary forward - the client pastes the original headers into the top of
-    the body as text. Recoverable only as far as the client's own wording goes,
-    which is why the label lists below are not just English.
-
-Only From and Subject come back dependably. Clients localise and reformat the
-date line ("Sent: Tuesday, August 25, 2026 9:00 AM", or Gmail's "Date: Tue, 25
-Aug 2026 at 09:00"), so a date that will not parse is left to the caller to
-fall back on. Nothing here guesses.
+Two shapes are handled: an attached message/rfc822 original, and the header
+block a client pastes into the body. From and Subject are recovered from both.
+A pasted date is often in a client-specific format that does not parse, and is
+then omitted.
 """
 
 from __future__ import annotations
@@ -25,16 +15,14 @@ from html import unescape
 
 log = logging.getLogger(__name__)
 
-# The header labels clients write when they paste a forwarded block, in the
-# languages this is likely to meet. Matching is case-folded.
+# Header labels used in pasted forward blocks. Matched case-folded.
 _FROM_LABELS = frozenset({"from", "von", "da", "de", "van", "fra", "från", "od", "nadawca"})
 _SUBJECT_LABELS = frozenset({"subject", "betreff", "oggetto", "objet", "asunto", "assunto",
                              "onderwerp", "ämne", "emne", "temat"})
 _DATE_LABELS = frozenset({"date", "sent", "datum", "gesendet", "data", "inviato", "fecha",
                           "enviado", "envoyé", "verzonden", "skickat", "wysłano"})
 
-# A line that announces a forwarded block. Scanning starts after one of these
-# when present, which keeps a quoted reply chain further down out of the way.
+# Lines that announce a forwarded block. Scanning starts after the first match.
 _MARKERS = (
     "forwarded message",
     "original message",
@@ -51,18 +39,16 @@ _MARKERS = (
 )
 
 _ADDRESS = re.compile(r"[^\s<>@,;:\"]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
-# Bullets, quote markers and leftover emphasis that clients wrap labels in.
+# Bullets, quote markers and emphasis wrapped around labels.
 _LABEL_NOISE = "*_> \t "
-# How far past the From line the rest of the block can reasonably be.
+# Lines after the From line that are searched for Subject and Date.
 _BLOCK_LINES = 12
 
 
 def original_headers(message: Message) -> dict[str, str]:
     """From/Subject/Date of the forwarded original, or {} if there is none.
 
-    Keys are only present when found, and values are single-line and raw - the
-    caller parses the address and the date, exactly as it does for a message
-    that was not forwarded.
+    Keys are present only when found. Values are raw single-line header text.
     """
     return _from_attached_message(message) or _from_body_text(message)
 
@@ -72,7 +58,7 @@ def _flatten(value: object) -> str:
 
 
 def _from_attached_message(message: Message) -> dict[str, str]:
-    """Headers of an embedded message/rfc822 part, the trustworthy case."""
+    """Headers of an embedded message/rfc822 part."""
     for part in message.walk():
         if part.get_content_type() != "message/rfc822":
             continue
@@ -96,7 +82,7 @@ def _from_attached_message(message: Message) -> dict[str, str]:
 
 
 def _body_text(message: Message) -> str:
-    """The first text body of the message, HTML flattened if that is all there is."""
+    """The first text body of the message, HTML flattened if there is no plain text."""
     plain = html = ""
     for part in message.walk():
         content_type = part.get_content_type()
@@ -119,7 +105,7 @@ def _body_text(message: Message) -> str:
 
 
 def _strip_tags(html: str) -> str:
-    """Crude tag removal, enough to get a pasted header block onto its own lines."""
+    """Remove tags, keeping block boundaries as newlines."""
     text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
     text = re.sub(r"(?i)<(br|/p|/div|/tr|/li|/h[1-6])\s*/?>", "\n", text)
     text = re.sub(r"<[^>]+>", " ", text)
@@ -143,7 +129,7 @@ def _marker_index(lines: list[str]) -> int:
 
 
 def _from_body_text(message: Message) -> dict[str, str]:
-    """Headers out of the block a client pastes at the top of a forward."""
+    """Headers from a pasted forward block in the body."""
     lines = _body_text(message).splitlines()
     if not lines:
         return {}
