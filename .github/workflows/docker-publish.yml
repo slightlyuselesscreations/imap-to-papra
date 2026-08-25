@@ -3,6 +3,10 @@
 #   tag v1.2.3    -> :1.2.3, :1.2, :1, :latest
 #   pull request  -> build only, no push
 #
+# Docs-only pushes to main are skipped. Path filters are ignored for tag
+# pushes, so a release still builds even if the tagged commit only touched
+# markdown: https://github.com/actions/runner/issues/3933
+#
 # The first push creates the package as private. Set it to Public at
 # github.com/orgs/slightlyuselesscreations/packages/container/imap-to-papra/settings
 
@@ -12,6 +16,9 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
   pull_request:
   workflow_dispatch:
 
