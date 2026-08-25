@@ -11,6 +11,7 @@ Papra can already ingest documents by email, but both documented options route y
   like) and noise such as smime.p7s
 * Uploads each one to Papra and verifies it by reading it back
 * Labels the document with custom properties with information from where the mail it came from
+* Files forwarded mail under whoever originally sent it, not the forwarder
 * Deletes the message, but only if every attachment made it
 * Optionally sends an ntfy notification saying what was filed, from whom, and
   with what subject
@@ -100,6 +101,32 @@ rename with that in mind.
 These are searchable: `"email sender":billing@acme.com`, `has:"email import"`.
 A property left empty on a document is simply one the mail did not carry -- a
 mail with no Date header gets no `Email date`.
+
+## Forwarded mail
+
+Forwarding rewrites `From` to whoever forwarded it, which would file a
+forwarded invoice under a colleague instead of the company that sent it. The
+original headers are recovered where possible, and `Email sender`,
+`Email subject` and `Email date` all describe the original mail:
+
+| Forward style | Where the original is read from | How well it works |
+| --- | --- | --- |
+| Forward as attachment | The `message/rfc822` part | Exactly. Real headers, no guessing |
+| Ordinary forward | The header block the client pastes at the top of the body | Sender and subject reliably; the date often not |
+
+The pasted block is read in English, German, French, Italian, Spanish, Dutch,
+the Nordic languages and Polish, from plain text or from HTML when that is all
+the mail carries. A mail that is not a forward is untouched.
+
+The date is the weak spot: clients rewrite it into their own local format
+("Sent: Tuesday, August 25, 2026 9:00 AM", or Gmail's "Tue, 25 Aug 2026 at
+09:00"), and neither is a date any parser is obliged to understand. When the
+original date cannot be read, `Email date` falls back to when the mail was
+forwarded rather than guessing. An attached original always has a real date.
+
+Note that a forward-as-attachment holds two files as far as Papra is concerned:
+the attached `.eml` and the attachment inside it. Both are archived. To keep
+only the real document, add `eml` to `attachments.denied`.
 
 ## Usage
 

@@ -9,7 +9,7 @@ from email.message import Message
 from email.utils import parsedate_to_datetime, parseaddr
 
 from imap_to_papra import attachments as attachments_mod
-from imap_to_papra import mail, notify
+from imap_to_papra import forwarded, mail, notify
 from imap_to_papra.attachments import Attachment, Selection
 from imap_to_papra.config import Config
 from imap_to_papra.papra import PapraAuthError, PapraClient, PapraError, PapraUploadError
@@ -107,34 +107,57 @@ def sender_of(message: Message) -> str:
     return address or raw or "(unknown sender)"
 
 
-def _describe(message: Message) -> str:
-    return f"{subject_of(message)} from {sender_of(message)}"
-
-
-def _sent_at(message: Message) -> str:
-    """The Date header as ISO 8601, which is what Papra's date type accepts."""
-    raw = _header(message, "Date")
+def _iso_date(raw: str) -> str:
+    """An RFC 2822 date as ISO 8601, which is what Papra's date type accepts."""
     if not raw:
         return ""
     try:
         return parsedate_to_datetime(raw).isoformat()
     except (TypeError, ValueError):
-        log.debug("  unparseable Date header %r; leaving the date property unset", raw)
+        log.debug("  unparseable date %r; falling back", raw)
         return ""
 
 
-def _property_values(message: Message, attachment: Attachment) -> dict[str, object]:
-    """The custom property values for one document.
+@dataclass(frozen=True)
+class MailFacts:
+    """Who really sent a message, and about what.
 
-    Deliberately not built from subject_of()/sender_of(): their "(no subject)"
-    placeholders are right for a notification and wrong for a data field, where
-    an absent header should simply leave the property unset.
+    A forwarded mail's own From is whoever forwarded it, which files the
+    document under the wrong person. When the original is recoverable its
+    headers win, so both a forward and the mail it carried land the same way.
+
+    Fields are empty rather than placeholders when a header is absent: these
+    feed custom property values, where an unset property is the honest answer.
     """
+
+    sender: str
+    subject: str
+    sent_at: str
+    forwarded: bool
+
+    @classmethod
+    def of(cls, message: Message) -> "MailFacts":
+        original = forwarded.original_headers(message)
+        # The original's date is the one clients mangle most, so an unparseable
+        # one falls back to the forward's own date rather than being dropped.
+        return cls(
+            sender=parseaddr(original.get("from") or _header(message, "From"))[1],
+            subject=original.get("subject") or _header(message, "Subject"),
+            sent_at=_iso_date(original.get("date", "")) or _iso_date(_header(message, "Date")),
+            forwarded=bool(original),
+        )
+
+    def describe(self) -> str:
+        return f"{self.subject or '(no subject)'} from {self.sender or '(unknown sender)'}"
+
+
+def _property_values(facts: MailFacts, attachment: Attachment) -> dict[str, object]:
+    """The custom property values for one document."""
     values: dict[str, object] = {
-        "Email subject": _header(message, "Subject"),
-        "Email sender": parseaddr(_header(message, "From"))[1],
+        "Email subject": facts.subject,
+        "Email sender": facts.sender,
         "Email import": True,
-        "Email date": _sent_at(message),
+        "Email date": facts.sent_at,
         "Attachment filename": attachment.filename,
     }
     return {name: value for name, value in values.items() if value != ""}
@@ -185,7 +208,7 @@ def _log_skips(selection: Selection) -> None:
 
 def _process_message(
     client: PapraClient,
-    message: Message,
+    facts: MailFacts,
     selection: Selection,
     summary: Summary,
     definitions: dict[str, str],
@@ -208,7 +231,7 @@ def _process_message(
                 attachment.size,
                 attachment.sha256[:12],
             )
-            log.debug("  would label it %s", _property_values(message, attachment))
+            log.debug("  would label it %s", _property_values(facts, attachment))
             continue
 
         try:
@@ -218,7 +241,7 @@ def _process_message(
                 _apply_properties(
                     client,
                     result.document_id,
-                    _property_values(message, attachment),
+                    _property_values(facts, attachment),
                     definitions,
                 )
         except PapraUploadError as exc:
@@ -267,7 +290,10 @@ def run_once(cfg: Config, *, dry_run: bool = False) -> Summary:
 
             for uid in uids:
                 message = mailbox.fetch_message(uid)
-                log.info("message %d: %s", uid, _describe(message))
+                facts = MailFacts.of(message)
+                log.info("message %d: %s", uid, facts.describe())
+                if facts.forwarded:
+                    log.info("  forwarded mail: filing it under the original sender")
 
                 selection = attachments_mod.select(
                     message,
@@ -293,15 +319,15 @@ def run_once(cfg: Config, *, dry_run: bool = False) -> Summary:
                     continue
 
                 archived_ok, stored = _process_message(
-                    client, message, selection, summary, definitions, dry_run=dry_run
+                    client, facts, selection, summary, definitions, dry_run=dry_run
                 )
                 if archived_ok:
                     summary.messages_archived += 1
                     if stored:
                         summary.archived.append(
                             ArchivedMessage(
-                                sender=sender_of(message),
-                                subject=subject_of(message),
+                                sender=facts.sender or "(unknown sender)",
+                                subject=facts.subject or "(no subject)",
                                 documents=stored,
                             )
                         )
